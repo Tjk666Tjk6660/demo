@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>React 虚拟瀑布流 + 动态加载</title>
+    <style>
+        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; }
+        #root { min-height: 100vh; }
+        
+        /* 卡片样式 */
+        .card-content {
+            height: 100%;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-weight: bold;
+            font-size: 24px;
+            transition: transform 0.2s;
+            animation: fadeIn 0.5s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        .card-info { font-size: 14px; margin-top: 8px; opacity: 0.9; }
+
+        /* 底部加载指示器样式 */
+        .loading-footer {
+            height: 60px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #666;
+            font-size: 14px;
+            width: 100%;
+            /* 关键：确保它在瀑布流下面 */
+            position: absolute; 
+            left: 0;
+        }
+        .spinner {
+            width: 20px; height: 20px;
+            border: 3px solid #ccc;
+            border-top-color: #007bff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+
+
+
+
+       // 核心 类似于vdom 用数组列出每个元素的x，y， width ，height
+
+     // 1 .动态加载列表 最底部哨兵dom IntersectionObserver 动态更新数据列表
+     // 2 . 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        // --- 1. 模拟数据生成器 (带 startIndex 以防 ID 冲突) ---
+        const generateData = (count, startIndex = 0) => {
+            return Array.from({ length: count }).map((_, i) => ({
+                id: startIndex + i,
+                height: Math.floor(Math.random() * (400 - 150 + 1) + 150),
+                color: `hsl(${Math.random() * 360}, 70%, 65%)`
+            }));
+        };
+
+        // --- 2. 布局算法 Hook (保持不变) ---
+        const useMasonryLayout = (items, columnCount, containerWidth, gap) => {
+            return useMemo(() => {
+                if (!containerWidth) return { containerHeight: 0, layoutItems: [] };
+                const columnWidth = (containerWidth - (columnCount - 1) * gap) / columnCount;
+                const columnHeights = new Array(columnCount).fill(0);
+
+                const layoutItems = items.map((item) => {
+                    const minHeight = Math.min(...columnHeights);
+                    const minIndex = columnHeights.indexOf(minHeight);
+                    const x = minIndex * (columnWidth + gap);
+                    const y = minHeight;
+                    columnHeights[minIndex] += item.height + gap;
+                    return { item, x, y, width: columnWidth, height: item.height };
+                });
+
+                return { containerHeight: Math.max(...columnHeights), layoutItems };
+            }, [items, columnCount, containerWidth, gap]);
+        };
+
+        // --- 3. 瀑布流组件 (新增：onEndReached, isLoading) ---
+        const VirtualWaterfall = ({ 
+            items, 
+            columnCount = 3, 
+            gap = 16, 
+            buffer = 600, 
+            onEndReached, 
+            isLoading 
+        }) => {
+            const containerRef = useRef(null);
+            const footerRef = useRef(null); // 哨兵元素 Ref
+            const [containerWidth, setContainerWidth] = useState(0);
+            const [scrollTop, setScrollTop] = useState(0);
+            const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
+
+            // A. ResizeObserver 获取容器宽度
+            useEffect(() => {
+                if (!containerRef.current) return;
+                const observer = new ResizeObserver((entries) => {
+                    setContainerWidth(entries[0].contentRect.width);
+                });
+                observer.observe(containerRef.current);
+                return () => observer.disconnect();
+            }, []);
+
+            // B. 滚动监听 (用于虚拟化计算)
+            useEffect(() => {
+                const handleScroll = () => {
+                    requestAnimationFrame(() => {
+                        setScrollTop(window.scrollY || document.documentElement.scrollTop);
+                    });
+                };
+                window.addEventListener('scroll', handleScroll);
+                window.addEventListener('resize', () => setViewportHeight(window.innerHeight));
+                return () => {
+                    window.removeEventListener('scroll', handleScroll);
+                    window.removeEventListener('resize', () => setViewportHeight(window.innerHeight));
+                };
+            }, []);
+
+            // C. IntersectionObserver (核心：触底加载监听)
+            useEffect(() => {
+                if (!footerRef.current) return;
+                
+                const observer = new IntersectionObserver((entries) => {
+                    // 如果 footer 进入视口，且当前不在加载中，且有数据
+                    if (entries[0].isIntersecting && !isLoading && items.length > 0) {
+                        console.log('触底了，请求更多数据...');
+                        onEndReached?.();
+                    }
+                }, {
+                    rootMargin: '200px', // 提前 200px 触发，体验更丝滑
+                    threshold: 0.1
+                });
+
+                observer.observe(footerRef.current);
+                return () => observer.disconnect();
+            }, [isLoading, items.length, onEndReached]);
+
+            // D. 计算布局
+            const { containerHeight, layoutItems } = useMasonryLayout(
+                items, 
+                Math.max(1, Math.floor(containerWidth / 250)), 
+                containerWidth, 
+                gap
+            );
+
+            // E. 虚拟化过滤
+            const visibleItems = useMemo(() => {
+                const start = scrollTop - buffer;
+                const end = scrollTop + viewportHeight + buffer;
+                return layoutItems.filter((pos) => {
+                    return (pos.y + pos.height) > start && pos.y < end;
+                });
+            }, [layoutItems, scrollTop, viewportHeight, buffer]);
+
+            return (
+                <div 
+                    ref={containerRef} 
+                    style={{ 
+                        position: 'relative', 
+                        // 容器高度需要包含 footer 的高度
+                        height: containerHeight + 60, 
+                        width: '100%',
+                        overflow: 'hidden'
+                    }}
+                >
+                    {visibleItems.map((pos) => (
+                        <div
+                            key={pos.item.id}
+                            style={{
+                                position: 'absolute',
+                                top: 0, left: 0,
+                                width: pos.width, height: pos.height,
+                                transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
+                                willChange: 'transform'
+                            }}
+                        >
+                            <div className="card-content" style={{ backgroundColor: pos.item.color }}>
+                                <span>{pos.item.id}</span>
+                            </div>
+                        </div>
+                    ))}
+
+                    {/* 哨兵元素 / Loading Footer */}
+                    {/* 把它绝对定位到最底部 */}
+                    <div 
+                        ref={footerRef}
+                        className="loading-footer"
+                        style={{ top: containerHeight }} 
+                    >
+                        {isLoading ? (
+                            <><div className="spinner"></div> 正在加载更多...</>
+                        ) : (
+                            <span>下拉加载更多</span>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 4. 根组件 ---
+        const App = () => {
+            // 状态：列表数据
+            const [items, setItems] = useState([]);
+            // 状态：加载中
+            const [isLoading, setIsLoading] = useState(false);
+
+            // 初始化加载 20 条
+            useEffect(() => {
+                setItems(generateData(20));
+            }, []);
+
+            // 模拟 API 请求
+            const loadMoreData = useCallback(() => {
+                if (isLoading) return;
+                setIsLoading(true);
+
+                // 模拟网络延迟 1秒
+                setTimeout(() => {
+                    setItems(prev => {
+                        const nextId = prev.length;
+                        const newData = generateData(20, nextId);
+                        return [...prev, ...newData];
+                    });
+                    setIsLoading(false);
+                }, 1000);
+            }, [isLoading]);
+
+            return (
+                <div style={{ maxWidth: 1200, margin: '0 auto', padding: '20px' }}>
+                    <div style={{ position: 'sticky', top: 0, zIndex: 100, background: 'rgba(255,255,255,0.9)', padding: '10px', marginBottom: '10px', backdropFilter: 'blur(5px)' }}>
+                        <h2 style={{margin: 0, textAlign: 'center'}}>
+                            虚拟瀑布流 + 动态加载 ({items.length} items)
+                        </h2>
+                    </div>
+
+                    <VirtualWaterfall 
+                        items={items} 
+                        isLoading={isLoading}
+                        onEndReached={loadMoreData} 
+                    />
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
