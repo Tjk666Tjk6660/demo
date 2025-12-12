@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>React 联动滚动列表</title>
+
+    <script
+      crossorigin
+      src="https://unpkg.com/react@18/umd/react.development.js"
+    ></script>
+    <script
+      crossorigin
+      src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"
+    ></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #f0f2f5;
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      ::-webkit-scrollbar {
+        width: 4px;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: #ccc;
+        border-radius: 2px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+      // ================= 配置常量 =================
+      const CONTAINER_HEIGHT = 600;
+      const ITEM_HEIGHT = 350;
+
+      // 【关键】不再需要 PAD_HEIGHT，回归正常列表
+      const VISIBLE_COUNT = Math.ceil(CONTAINER_HEIGHT / ITEM_HEIGHT);
+      const BUFFER_SIZE = 2;
+      const BATCH_SIZE = 20;
+      const MAX_ITEMS = 80;
+
+      const styles = {
+        container: {
+          display: "flex",
+          width: "900px",
+          height: `${CONTAINER_HEIGHT}px`,
+          background: "#fff",
+          borderRadius: "12px",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
+          overflow: "hidden",
+          fontFamily: "sans-serif",
+          position: "relative",
+        },
+        leftPanel: {
+          flex: 1,
+          overflowY: "auto",
+          position: "relative",
+          backgroundColor: "#fafafa",
+          willChange: "scroll-position",
+        },
+        // 红线：容器中线
+        centerLine: {
+          position: "absolute",
+          top: "50%",
+          left: 0,
+          right: "220px",
+          height: "2px",
+          background: "red",
+          zIndex: 999,
+          pointerEvents: "none",
+          opacity: 0.5,
+          marginTop: "-1px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          paddingRight: "10px",
+          fontSize: "10px",
+          color: "red",
+        },
+        rightPanel: {
+          width: "220px",
+          background: "#fff",
+          borderLeft: "1px solid #eee",
+          display: "flex",
+          flexDirection: "column",
+        },
+        phantom: {
+          position: "absolute",
+          left: 0,
+          top: 0,
+          right: 0,
+          zIndex: -1,
+        },
+        itemContainer: { position: "absolute", left: 0, right: 0, top: 0 },
+
+        detailItem: {
+          background: "#fff",
+          border: "2px solid transparent",
+          borderRadius: "8px",
+          boxSizing: "border-box",
+          height: `${ITEM_HEIGHT}px`,
+          padding: "20px",
+          borderBottom: "1px solid #eee",
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          transition: "all 0.3s ease-out",
+          position: "relative",
+          // 未选中时
+          opacity: 0.6,
+          transform: "scale(0.95)",
+          borderLeft: "4px solid transparent",
+        },
+        // 选中时
+        activeDetail: {
+          backgroundColor: "#fff",
+          opacity: 1,
+          transform: "scale(1)",
+          boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
+          zIndex: 2,
+          borderLeft: "4px solid #1890ff", // 左侧加个蓝条强调选中
+        },
+
+        navHeader: {
+          padding: "15px 20px",
+          fontWeight: "bold",
+          borderBottom: "1px solid #eee",
+          zIndex: 10,
+        },
+        navList: { flex: 1, overflowY: "auto", position: "relative" },
+        navItem: {
+          padding: "16px 20px",
+          cursor: "pointer",
+          borderLeft: "4px solid transparent",
+          fontSize: "14px",
+          color: "#555",
+          transition: "all 0.2s",
+          scrollMarginTop: "60px",
+        },
+        activeNav: {
+          color: "#1890ff",
+          backgroundColor: "#e6f7ff",
+          borderLeftColor: "#1890ff",
+          fontWeight: 600,
+        },
+        loading: {
+          height: "60px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#999",
+          position: "absolute",
+          left: 0,
+          right: 0,
+        },
+      };
+
+      const DualListSmartEdges = () => {
+        const [items, setItems] = useState([]);
+        const [activeIndex, setActiveIndex] = useState(0);
+        const [scrollTop, setScrollTop] = useState(0);
+        const [isLoading, setIsLoading] = useState(false);
+
+        const leftRef = useRef(null);
+        const rightRef = useRef(null);
+
+        const isClickNavigating = useRef(false);
+        const isRightScrolling = useRef(false);
+        const isLoadingFromRight = useRef(false);
+        const scrollEndTimer = useRef(null);
+        const rightScrollTimer = useRef(null);
+
+        const generateData = (startId, count) =>
+          Array.from({ length: count }, (_, i) => ({
+            index: startId + i,
+            id: `item-${startId + i}`,
+            title: `Item ${startId + i}`,
+            desc: `Index: ${startId + i}`,
+          }));
+
+        const loadMore = useCallback(() => {
+          if (isLoading || items.length >= MAX_ITEMS) return;
+          setIsLoading(true);
+          setTimeout(() => {
+            setItems((prev) => [
+              ...prev,
+              ...generateData(prev.length, BATCH_SIZE),
+            ]);
+            setIsLoading(false);
+            setTimeout(() => {
+              isLoadingFromRight.current = false;
+            }, 50);
+          }, 300);
+        }, [isLoading, items.length]);
+
+        useEffect(() => {
+          loadMore();
+        }, []);
+
+        // ================= 1. 左侧虚拟滚动 =================
+        const visibleItems = useMemo(() => {
+          const startIndex = Math.floor(scrollTop / ITEM_HEIGHT);
+          const renderStart = Math.max(0, startIndex - BUFFER_SIZE);
+          const renderEnd = Math.min(
+            items.length,
+            startIndex + VISIBLE_COUNT + BUFFER_SIZE
+          );
+
+          return {
+            data: items.slice(renderStart, renderEnd),
+            offsetY: renderStart * ITEM_HEIGHT, // 正常偏移，无Padding
+          };
+        }, [scrollTop, items]);
+
+        const handleLeftScroll = (e) => {
+          const currentScrollTop = e.target.scrollTop;
+          setScrollTop(currentScrollTop);
+
+          // 如果正在点击导航，延迟计算，防止高亮乱跳
+          if (!isClickNavigating.current) {
+            calculateActiveIndex(
+              currentScrollTop,
+              e.target.scrollHeight,
+              e.target.clientHeight
+            );
+          } else {
+            if (scrollEndTimer.current) clearTimeout(scrollEndTimer.current);
+            scrollEndTimer.current = setTimeout(() => {
+              isClickNavigating.current = false;
+              calculateActiveIndex(
+                currentScrollTop,
+                e.target.scrollHeight,
+                e.target.clientHeight
+              );
+            }, 100);
+          }
+
+          if (
+            !isLoading &&
+            currentScrollTop + e.target.clientHeight >=
+              e.target.scrollHeight - 50
+          ) {
+            loadMore();
+          }
+        };
+
+        // 【核心算法】智能选中策略
+        const calculateActiveIndex = (
+          currentTop,
+          scrollHeight,
+          clientHeight
+        ) => {
+          let nextIndex;
+
+          // 1. 边缘检测：如果在顶部范围内，强制选中 0
+          // 阈值设为半个元素高度，一旦滚下去一点点，就启用中心检测
+          if (currentTop < ITEM_HEIGHT / 2) {
+            nextIndex = 0;
+          }
+          // 2. 边缘检测：如果在底部范围内，强制选中最后一个
+          else if (
+            !isLoading &&
+            currentTop >= scrollHeight - clientHeight - ITEM_HEIGHT / 2
+          ) {
+            nextIndex = items.length - 1;
+          }
+          // 3. 中间区域：谁离中心红线最近，选中谁
+          else {
+            const viewportCenterY = currentTop + CONTAINER_HEIGHT / 2;
+            nextIndex = Math.floor(viewportCenterY / ITEM_HEIGHT);
+          }
+
+          nextIndex = Math.max(0, Math.min(nextIndex, items.length - 1));
+
+          if (nextIndex !== activeIndex) {
+            setActiveIndex(nextIndex);
+          }
+        };
+
+        // ================= 2. 右侧点击 -> 左侧滚动 =================
+        const handleNavClick = (index) => {
+          isClickNavigating.current = true;
+          setActiveIndex(index);
+
+          if (leftRef.current) {
+            // 【关键公式】尝试居中：(Top) - (Container/2) + (Item/2)
+            let targetTop =
+              index * ITEM_HEIGHT - CONTAINER_HEIGHT / 2 + ITEM_HEIGHT / 2;
+
+            // 这里的 Math.max(0, ...) 实际上浏览器 scrollTo 会自己处理
+            // 但这个公式保证了：
+            // - 如果 index 是 0: 结果是负数 -> 浏览器停在 0 -> Item 0 就在顶部。
+            // - 如果 index 是 5: 结果是正数 -> 浏览器滚到对应位置 -> Item 5 就在中间。
+            leftRef.current.scrollTo({
+              top: targetTop,
+              behavior: "smooth",
+            });
+          }
+        };
+
+        // ================= 3. 联动跟随 =================
+        useEffect(() => {
+          if (
+            !isRightScrolling.current &&
+            !isClickNavigating.current &&
+            !isLoadingFromRight.current &&
+            rightRef.current
+          ) {
+            const targetNav = rightRef.current.querySelector(
+              `[data-index="${activeIndex}"]`
+            );
+            if (targetNav)
+              targetNav.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }, [activeIndex]);
+
+        const handleRightScroll = (e) => {
+          isRightScrolling.current = true;
+          if (rightScrollTimer.current) clearTimeout(rightScrollTimer.current);
+          rightScrollTimer.current = setTimeout(() => {
+            isRightScrolling.current = false;
+          }, 150);
+          if (
+            !isLoading &&
+            e.target.scrollTop + e.target.clientHeight >=
+              e.target.scrollHeight - 50
+          ) {
+            isLoadingFromRight.current = true;
+            loadMore();
+          }
+        };
+
+        return (
+          <div style={styles.container}>
+            {/* 中线红线 (辅助看是否居中) */}
+            <div style={styles.centerLine}>Center Line</div>
+
+            <div
+              ref={leftRef}
+              style={styles.leftPanel}
+              onScroll={handleLeftScroll}
+            >
+              {/* 正常高度，无额外Padding */}
+              <div
+                style={{
+                  ...styles.phantom,
+                  height: `${items.length * ITEM_HEIGHT}px`,
+                }}
+              />
+
+              <div
+                style={{
+                  ...styles.itemContainer,
+                  transform: `translateY(${visibleItems.offsetY}px)`,
+                }}
+              >
+                {visibleItems.data.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      ...styles.detailItem,
+                      ...(item.index === activeIndex
+                        ? styles.activeDetail
+                        : {}),
+                    }}
+                  >
+                    <h3>{item.title}</h3>
+                    <p>{item.desc}</p>
+                    <small>Index: {item.index}</small>
+                  </div>
+                ))}
+              </div>
+
+              {isLoading && (
+                <div
+                  style={{
+                    ...styles.loading,
+                    transform: `translateY(${items.length * ITEM_HEIGHT}px)`,
+                  }}
+                >
+                  加载中...
+                </div>
+              )}
+            </div>
+
+            <div style={styles.rightPanel}>
+              <div style={styles.navHeader}>总量: {items.length}</div>
+              <div
+                ref={rightRef}
+                style={styles.navList}
+                onScroll={handleRightScroll}
+              >
+                {items.map((item) => (
+                  <div
+                    key={item.id}
+                    data-index={item.index}
+                    style={{
+                      ...styles.navItem,
+                      ...(item.index === activeIndex ? styles.activeNav : {}),
+                    }}
+                    onClick={() => handleNavClick(item.index)}
+                  >
+                    {item.title}
+                  </div>
+                ))}
+                {isLoading && (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      padding: "10px",
+                      color: "#999",
+                    }}
+                  >
+                    加载更多...
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<DualListSmartEdges />);
+    </script>
+  </body>
+</html>
